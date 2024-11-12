@@ -620,6 +620,7 @@ class _PipelineStageBase(ABC):
             fwd_chunk_id,
             map_debug_info(output),
         )
+        print(self.log_prefix, " Forwarded microbatch", fwd_chunk_id)
         self._validate_fwd_outputs(output_tuple)
         return output
 
@@ -702,6 +703,8 @@ class _PipelineStageBase(ABC):
                 # Save a placeholder for the dw_runner
                 self.dw_runner[bwd_chunk_id] = lambda: None
         logger.debug("%s Backwarded chunk %s", self.log_prefix, bwd_chunk_id)
+        print(self.log_prefix, " Backwarded microbatch", bwd_chunk_id)
+
 
     def backward_weight_one_chunk(self, bwd_chunk_id: int):
         assert bwd_chunk_id in self.dw_runner, (

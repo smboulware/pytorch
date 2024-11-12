@@ -521,7 +521,13 @@ def _batch_p2p(p2p_ops: List[dist.P2POp], desc: Optional[str] = None):
         return None
     desc_str = f"{desc}, " if desc else ""
     logger.debug("batch_p2p %s%s", desc_str, p2p_ops)
-    return dist.batch_isend_irecv(p2p_ops).pop()
+    batch = dist.batch_isend_irecv(p2p_ops)
+    # print(batch)
+    # print(type(batch))
+    # popped = batch.pop()
+    # print(popped)
+    # print(type(popped))
+    return batch.pop()
 
 
 def _sorted_batch_p2p(
@@ -539,11 +545,9 @@ def _sorted_batch_p2p(
     work_by_peer: Dict[int, dist.Work] = {}
     if len(p2p_ops) == 0:
         return work_by_peer
-
     # Classify the ops by peer rank
     for op in p2p_ops:
         ops_by_peer[op.peer].append(op)
-
     # Call batch_isend_irecv per peer, in sorted order of the peers (to avoid hangs)
     for peer, ops in sorted(ops_by_peer.items()):
         work_by_peer[peer] = _batch_p2p(ops, desc=desc)
@@ -658,7 +662,7 @@ class _ScheduleForwardOnly(PipelineScheduleSingle):
                 ops = self._stage.get_fwd_send_ops(i)
                 works = _sorted_batch_p2p(ops, desc="fwd_send")
                 fwd_sends_to_wait.extend(works.values())
-
+            
             logger.debug("[%s] Forwarded microbatch %s", self._stage.stage_index, i)
 
         # Wait for all forward sends to finish
@@ -714,8 +718,10 @@ class ScheduleGPipe(PipelineScheduleSingle):
                 fwd_sends_to_wait.extend(works.values())
 
             logger.debug("[%s] Forwarded microbatch %s", self._stage.stage_index, i)
+            print("[", self._stage.stage_index, "] Forwarded microbatch", i)
 
             self._maybe_compute_loss(self._stage, output, target_mbs, i)
+            
 
         # Wait for all forward sends to finish
         # This should not have performance impact because by the time the first
@@ -726,7 +732,6 @@ class ScheduleGPipe(PipelineScheduleSingle):
         # No loss function, no need to run backward
         if not self._has_backward:
             return
-
         # Run backward
         # Delay send waits
         bwd_sends_to_wait: List[dist.Work] = []
@@ -745,6 +750,7 @@ class ScheduleGPipe(PipelineScheduleSingle):
                 bwd_sends_to_wait.extend(works.values())
 
             logger.debug("[%s] Backwarded microbatch %s", self._stage.stage_index, i)
+            print("[", self._stage.stage_index, "] Backwarded microbatch", i)
 
         # Return losses if there is a container passed in
         self._update_losses(self._stage, losses)
