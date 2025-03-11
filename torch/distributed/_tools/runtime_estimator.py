@@ -2,10 +2,11 @@
 import math
 import os
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List
 from typing_extensions import Self
 
 import torch
+from torch import nn
 import torch.utils._pytree as pytree
 from torch._guards import active_fake_mode
 from torch._inductor.utils import get_device_tflops, get_gpu_dram_gbps
@@ -87,9 +88,9 @@ class RuntimeEstimator(TorchDispatchMode):
     and also records their execution orders.
 
     Attributes:
-        mod_runtimes (Dict[str, Dict[str, float]]): A dictionary of module runtimes. The key to the outer dictionary
+        mod_runtimes (Dict[str, Dict[str, List[float]]]): A dictionary of module runtimes. The key to the outer dictionary
             is the fully qualified name (FQN) of the module. For each module the forward and backward runtimes of the
-            operations are aggregated in the inner dictionary keyed by 'fw' and 'bw'.
+            operations in each microbatch are aggregated in a list in the inner dictionary keyed by 'fw' and 'bw'.
         mod_fw_pre_order (List[str]): List of module FQNs in pre-forward execution order.
         mod_bw_pre_order (List[str]): List of module FQNs in pre-backward execution order.
         mod_fw_post_order (List[str]): List of module FQNs in post-forward execution order.
@@ -130,19 +131,20 @@ class RuntimeEstimator(TorchDispatchMode):
     _no_fallback_kernel: set[torch._ops._OpNamespace] = set()
     fake_mode: FakeTensorMode
 
-    def __init__(self) -> None:
+    def __init__(self, rank) -> None:
         super().__init__()
         self._estimate: Callable
         self._estimate_mode_type: str
         self._mod_tracker = ModTracker()
-        self.mod_runtimes: dict[str, dict[str, float]] = defaultdict(
-            lambda: defaultdict(lambda: 0.0)
-        )
+        self.mod_runtimes: Dict[str, Dict[str, List[float]]] = defaultdict(
+           lambda: defaultdict(lambda: [])
+       )
         self.mod_fw_pre_order: list[str] = []
         self.mod_bw_pre_order: list[str] = []
         self.mod_fw_post_order: list[str] = []
         self.mod_bw_post_order: list[str] = []
         self.total_runtime: float = 0.0
+        self.rank = rank
 
     # Adapted from: https://github.com/pytorch/pytorch/blob/9b902b3ee3bd608a19543362b66bf06c373dd374/torch/_subclasses/fake_tensor.py#L1969  # noqa: PGH004,B950
     # NB: returns fake tensors
@@ -441,9 +443,11 @@ class RuntimeEstimator(TorchDispatchMode):
             mod_depth = mod_fqn.count(".") + 1
             if mod_depth > depth:
                 continue
-            print(
-                f"{mod_fqn} fw: {runtimes.get('fw', 0.0):.3f}ms bw: {runtimes.get('bw', 0.0):.3f}ms"
-            )
+            for i in range(len(runtimes.get('fw'))):
+               print(
+                   f"{mod_fqn} microbatch #{i + 1}:: fw: {runtimes.get('fw', 0.0)[i]:.3f}ms bw: {runtimes.get('bw', 0.0)[i]:.3f}ms"
+               )
+
 
     def __torch_dispatch__(self, func, types, args=..., kwargs=None):  # type: ignore[no-untyped-def]
         # TODO: @sanketpurandare: Flatten tensors by desugaring the tensor subclasses
@@ -451,9 +455,11 @@ class RuntimeEstimator(TorchDispatchMode):
         res, op_time = self._estimate(func, args, kwargs)
         for par in self._mod_tracker.parents:
             if self._mod_tracker.is_bw:
-                self.mod_runtimes[par]["bw"] += op_time
+                if self.mod_runtimes[par]["bw"]:
+                   self.mod_runtimes[par]["bw"][-1] += op_time
             else:
-                self.mod_runtimes[par]["fw"] += op_time
+                if (self.mod_runtimes[par]["fw"]):
+                   self.mod_runtimes[par]["fw"][-1] += op_time
         self.total_runtime += op_time
         return res
 
@@ -485,6 +491,22 @@ class RuntimeEstimator(TorchDispatchMode):
         self._estimate_mode_type = estimate_mode_type
         return self
 
+    def _pre_fw_hook(self, module: nn.Module, inputs: Any) -> None:
+        # Create a new runtime entry for the current microbatch
+        self.mod_fw_pre_order.append(self._mod_tracker.get_known_fqn(module))
+
+        mod_name = self._mod_tracker.get_known_fqn(module)
+        assert mod_name is not None
+        self.mod_runtimes[mod_name]['fw'].append(0.0)
+
+    def _pre_bw_hook(self, module: nn.Module, inputs: Any) -> None:
+        # Create a new runtime entry for the current microbatch
+        self.mod_bw_pre_order.append(self._mod_tracker.get_known_fqn(module))
+
+        mod_name = self._mod_tracker.get_known_fqn(module)
+        assert mod_name is not None
+        self.mod_runtimes[mod_name]['bw'].append(0.0)
+
     def __enter__(self) -> Self:
         fake_mode = active_fake_mode()
         assert isinstance(fake_mode, FakeTensorMode), (
@@ -492,18 +514,14 @@ class RuntimeEstimator(TorchDispatchMode):
         )
         RuntimeEstimator.fake_mode = fake_mode
         self.total_runtime = 0.0
-        self.mod_runtimes = defaultdict(lambda: defaultdict(lambda: 0.0))
+        self.mod_runtimes = defaultdict(lambda: defaultdict(lambda: [])) 
         self.mod_fw_pre_order.clear()
         self.mod_bw_pre_order.clear()
         self.mod_fw_post_order.clear()
         self.mod_bw_post_order.clear()
         self._mod_tracker.register_user_hooks(
-            pre_fw_hook=lambda mod, inp: self.mod_fw_pre_order.append(
-                self._mod_tracker.get_known_fqn(mod)
-            ),
-            pre_bw_hook=lambda mod, g_out: self.mod_bw_pre_order.append(
-                self._mod_tracker.get_known_fqn(mod)
-            ),
+            pre_fw_hook=self._pre_fw_hook,
+            pre_bw_hook=self._pre_bw_hook,
             post_fw_hook=lambda mod, inp, out: self.mod_fw_post_order.append(
                 self._mod_tracker.get_known_fqn(mod)
             ),
@@ -517,6 +535,7 @@ class RuntimeEstimator(TorchDispatchMode):
 
     def __exit__(self, *args: Any) -> None:
         print(
+            f"[Stage {self.rank}]"
             f"Estimated ({self._estimate_mode_type})"
             f"total_time: {self.total_runtime:.3f} ms"
         )

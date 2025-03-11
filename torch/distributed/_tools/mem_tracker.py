@@ -666,12 +666,12 @@ class MemTracker(TorchDispatchMode):
                 self._in_ac = True
         else:
             parents = set(self._mod_tracker.parents) - {mod_name}
-            if len(parents) == 1 and "Global" in parents:
-                raise NotImplementedError(
-                    "MemTracker does not support memory tracking for multiple iterative calls."
-                    " Either use ``reset_mod_stats`` to clear module memory stats for the previous iteration"
-                    " or file a github issue if you need this feature."
-                )
+            # if len(parents) == 1 and "Global" in parents:
+            #     raise NotImplementedError(
+            #         "MemTracker does not support memory tracking for multiple iterative calls."
+            #         " Either use ``reset_mod_stats`` to clear module memory stats for the previous iteration"
+            #         " or file a github issue if you need this feature."
+            #     )
             mod_stats = self.memory_tracking[module]
             state = _ModState.PRE_FW
             input_mem = self._track_inputs_or_outputs(inputs)
