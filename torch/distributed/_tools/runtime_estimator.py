@@ -427,18 +427,20 @@ class RuntimeEstimator(TorchDispatchMode):
         Args:
             depth (int): The maximum depth of module hierarchy to display (default to 2).
         """
-        print("Pre-Forward Execution Order: ")
-        for mod_fqn in self.mod_fw_pre_order:
-            mod_depth = mod_fqn.count(".") + 1
-            if mod_depth > depth:
-                continue
-            print(mod_fqn)
-        print("Pre-Backward Execution Order: ")
-        for mod_fqn in self.mod_bw_pre_order:
-            mod_depth = mod_fqn.count(".") + 1
-            if mod_depth > depth:
-                continue
-            print(mod_fqn)
+        # The below are unhelpful (i.d. all the same) when using pipeline parallelism.
+        # TODO: Conditional execution of these print statements
+        # print("Pre-Forward Execution Order: ")
+        # for mod_fqn in self.mod_fw_pre_order:
+        #     mod_depth = mod_fqn.count(".") + 1
+        #     if mod_depth > depth:
+        #         continue
+        #     print(mod_fqn)
+        # print("Pre-Backward Execution Order: ")
+        # for mod_fqn in self.mod_bw_pre_order:
+        #     mod_depth = mod_fqn.count(".") + 1
+        #     if mod_depth > depth:
+        #         continue
+        #     print(mod_fqn)
         for mod_fqn, runtimes in self.mod_runtimes.items():
             mod_depth = mod_fqn.count(".") + 1
             if mod_depth > depth:
@@ -509,10 +511,10 @@ class RuntimeEstimator(TorchDispatchMode):
 
     def __enter__(self) -> Self:
         fake_mode = active_fake_mode()
-        assert isinstance(fake_mode, FakeTensorMode), (
-            "No FakeTensorMode found, designed to used under FakeTensorMode"
-        )
-        RuntimeEstimator.fake_mode = fake_mode
+        # assert isinstance(fake_mode, FakeTensorMode), (
+        #     "No FakeTensorMode found, designed to used under FakeTensorMode"
+        # )
+        # RuntimeEstimator.fake_mode = fake_mode
         self.total_runtime = 0.0
         self.mod_runtimes = defaultdict(lambda: defaultdict(lambda: [])) 
         self.mod_fw_pre_order.clear()
